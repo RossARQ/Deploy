@@ -1,0 +1,342 @@
+﻿<DMSScript options="304" xmlns="http://www.skyline.be/automation">
+	<Name>RemoveReservationsArqv2</Name>
+	<Description></Description>
+	<Type>Automation</Type>
+	<Author>Ross Elliott</Author>
+	<CheckSets>FALSE</CheckSets>
+	<Folder></Folder>
+	<Protocols>
+	</Protocols>
+	<Memory>
+	</Memory>
+	<Parameters>
+	</Parameters>
+	<Script>
+		<Exe id="2" type="csharp">
+			<Value><![CDATA[/*
+****************************************************************************
+*  Copyright (c) 2021,  Skyline Communications NV  All Rights Reserved.    *
+****************************************************************************
+
+By using this script, you expressly agree with the usage terms and
+conditions set out below.
+This script and all related materials are protected by copyrights and
+other intellectual property rights that exclusively belong
+to Skyline Communications.
+
+A user license granted for this script is strictly for personal use only.
+This script may not be used in any way by anyone without the prior
+written consent of Skyline Communications. Any sublicensing of this
+script is forbidden.
+
+Any modifications to this script by the user are only allowed for
+personal use and within the intended purpose of the script,
+and will remain the sole responsibility of the user.
+Skyline Communications will not be responsible for any damages or
+malfunctions whatsoever of the script resulting from a modification
+or adaptation by the user.
+
+The content of this script is confidential information.
+The user hereby agrees to keep this confidential information strictly
+secret and confidential and not to disclose or reveal it, in whole
+or in part, directly or indirectly to any person, entity, organization
+or administration without the prior written consent of
+Skyline Communications.
+
+Any inquiries can be addressed to:
+
+	Skyline Communications NV
+	Ambachtenstraat 33
+	B-8870 Izegem
+	Belgium
+	Tel.	: +32 51 31 35 69
+	Fax.	: +32 51 31 01 29
+	E-mail	: info@skyline.be
+	Web		: www.skyline.be
+	Contact	: Ben Vandenberghe
+
+****************************************************************************
+Revision History:
+
+DATE		VERSION		AUTHOR			COMMENTS
+
+dd/mm/2021	1.0.0.1		XXX, Skyline	Initial version
+****************************************************************************
+*/
+
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using System.Text;
+using Skyline.DataMiner.Automation;
+using Skyline.DataMiner.Library.Solutions.SRM;
+using Skyline.DataMiner.Library.Solutions.SRM.BookingsMonitoring;
+using Skyline.DataMiner.Net.Authentication.UserIdUtil;
+using Skyline.DataMiner.Net.Messages;
+using Skyline.DataMiner.Net.Messages.SLDataGateway;
+using Skyline.DataMiner.Net.ServiceManager.Objects;
+using Skyline.DataMiner.Protobuf.Shared.Core.DataTypes.Alarm;
+
+/// <summary>
+/// DataMiner Script Class.
+/// </summary>
+class Script
+{
+    /// <summary>
+    /// The Script entry point.
+    /// </summary>
+    /// <param name="engine">Link with SLAutomation process.</param>
+    public void Run(Engine engine)
+    {
+        // for checks 
+        int reservationsInt = 0;
+        int serviceInfoInt = 0;
+        int remainingReservationsInt = 0;
+        int remainingServiceInfoInt = 0;
+
+        // UI with 4 blocks.
+        // 1) reservations with .HasFinished = true 2) reservations with .HasFinished = False
+        // 3) SRMServiceInfo with .Name matching .Name of finished reservations
+        // 4) SRMServiceInfo with .Name matching .Name of remaining reservations
+        UIBuilder bookingUI = new UIBuilder();
+        bookingUI.AppendLine("Select reservations and SRMserviceInfo to remove...");
+        bookingUI.Height = 750;
+        bookingUI.Width = 700;
+        bookingUI.ColumnDefs = "a;a;a";
+        bookingUI.RowDefs = "a;a;a;a;a;a;a;a;a;a;a;a;a;a;a;a;a;a";
+
+        UIBlockDefinition reservationList = new UIBlockDefinition
+        {
+            Title = "Finished Reservations",
+            Type = UIBlockType.CheckBoxList,
+            Row = 2,
+            RowSpan = 3,
+            Height = 100,
+            Width = 500,
+            Margin = "10",
+            WantsOnChange = false,
+            DestVar = "chosenBookings",
+        };
+
+        UIBlockDefinition remainingReservations = new UIBlockDefinition
+        {
+            Title = "Remaining Reservations",
+            Type = UIBlockType.CheckBoxList,
+            Row = 7,
+            RowSpan = 3,
+            Height = 100,
+            Width = 500,
+            Margin = "10",
+            WantsOnChange = false,
+            DestVar = "chosenRemainingBookings",
+            Text = "Remaining Reservations",
+        };
+
+        UIBlockDefinition srmServiceInfoList = new UIBlockDefinition
+        {
+            Title = "Finished SRMServiceInfo",
+            Type = UIBlockType.CheckBoxList,
+            Row = 12,
+            RowSpan = 3,
+            Height = 100,
+            Width = 500,
+            Margin = "10",
+            WantsOnChange = false,
+            DestVar = "chosenSRMServiceInfo",
+        };
+
+        UIBlockDefinition remainingSRMServiceInfo = new UIBlockDefinition
+        {
+            Title = "Remaining SRMServiceInfo",
+            Type = UIBlockType.CheckBoxList,
+            Row = 17,
+            RowSpan = 3,
+            Height = 100,
+            Width = 500,
+            Margin = "10",
+            WantsOnChange = false,
+            DestVar = "chosenRemainingSRMServiceInfo",
+        };
+
+        // Gets all reservations instances, outputs the count
+        var reservations = SrmManagers.ResourceManager.GetReservationInstances(new TRUEFilterElement<Skyline.DataMiner.Net.ResourceManager.Objects.ReservationInstance>());
+        engine.GenerateInformation("all reservations count: " + reservations.Count());
+
+        // Declare lists for reservations
+        List<Skyline.DataMiner.Net.ResourceManager.Objects.ReservationInstance> finishedReservations = new List<Skyline.DataMiner.Net.ResourceManager.Objects.ReservationInstance>();
+        List<Skyline.DataMiner.Net.ResourceManager.Objects.ReservationInstance> notFinishedReservations = new List<Skyline.DataMiner.Net.ResourceManager.Objects.ReservationInstance>();
+
+        // Gets all SRMServiceInfo, outputs the count
+        var srmServiceInfo = SrmManagers.ServiceManager.GetSRMServiceInfo(new TRUEFilterElement<SRMServiceInfo>());
+        engine.GenerateInformation("all SRMServiceInfo count: " + srmServiceInfo.Count());
+
+        // Declare lists for SRMServiceInfo
+        List<SRMServiceInfo> finishedSRMServiceInfo = new List<SRMServiceInfo>();
+        List<SRMServiceInfo> notFinishedSRMServiceInfo = new List<SRMServiceInfo>();
+
+        // adds checkbox items for UI block 1 by name and adds to a list
+        // else adds to notfinished
+        foreach (var reservation in reservations)
+        {
+            if (reservation.HasFinished())
+            {
+                reservationList.AddCheckBoxListOption(reservationsInt.ToString(), reservation.Name);
+                finishedReservations.Add(reservation);
+                reservationsInt++;
+                // engine.GenerateInformation(reservation.Name + " reservation is finished");
+            }
+            else
+            {
+                notFinishedReservations.Add(reservation);
+                // engine.GenerateInformation(reservation.Name + " reservation is not finished");
+            }
+        }
+
+        // adds checkbox items from the remainingReservations list by name
+        foreach (var remainingReservation in notFinishedReservations)
+        {
+            remainingReservations.AddCheckBoxListOption(remainingReservationsInt.ToString(), remainingReservation.Name);
+            remainingReservationsInt++;
+        }
+
+        // adds all SRMServiceInfo to both lists
+        foreach (var serviceInfo in srmServiceInfo)
+        {
+            finishedSRMServiceInfo.Add(serviceInfo);
+            notFinishedSRMServiceInfo.Add(serviceInfo);
+        }
+
+        // filters finished SRMServiceInfo with items whose name are in finishedReservations
+        // DOES NOT CAPTURE ALL SERVICE INFO - WILL NEED IMPROVEMENTS
+        finishedSRMServiceInfo = finishedSRMServiceInfo.Where(info => finishedReservations.Any(finished => finished.Name == info.Name)).ToList();
+
+        // filters notfinished SRMServiceInfo with items whose name are in notfinishedReservations
+        notFinishedSRMServiceInfo = notFinishedSRMServiceInfo.Where(info => notFinishedReservations.Any(notFinished => notFinished.Name == info.Name)).ToList();
+
+        // adds checkbox items
+        foreach (var finishedServiceInfo in finishedSRMServiceInfo)
+        {
+            srmServiceInfoList.AddCheckBoxListOption(serviceInfoInt.ToString(), finishedServiceInfo.Name);
+            serviceInfoInt++;
+            // engine.GenerateInformation(finishedServiceInfo.Name + " ServiceInfo is for a finished reservation");
+        }
+
+        // adds checkbox items
+        foreach (var remainingServiceInfo in notFinishedSRMServiceInfo)
+        {
+            remainingSRMServiceInfo.AddCheckBoxListOption(remainingServiceInfoInt.ToString(), remainingServiceInfo.Name);
+            remainingServiceInfoInt++;
+            // engine.GenerateInformation(remainingServiceInfo.Name + " ServiceInfo is for a reservation that's not finished");
+        }
+
+        // remaining UI elements
+        bookingUI.RequireResponse = true;
+
+        UIBlockDefinition finishedReservationsText = new UIBlockDefinition
+        {
+            Type = UIBlockType.StaticText,
+            Text = "These are reservations with state .HasFinished = true",
+            Row = 1,
+        };
+        bookingUI.AppendBlock(finishedReservationsText);
+        bookingUI.AppendBlock(reservationList);
+
+        UIBlockDefinition remainingReservationsText = new UIBlockDefinition
+        {
+            Type = UIBlockType.StaticText,
+            Text = "These are the remaining reservations",
+            Row = 6,
+        };
+        bookingUI.AppendBlock(remainingReservationsText);
+        bookingUI.AppendBlock(remainingReservations);
+
+        UIBlockDefinition finishedInfoText = new UIBlockDefinition
+        {
+            Type = UIBlockType.StaticText,
+            Text = "SRM ServiceInfo for finished reservations",
+            Row = 11,
+        };
+        bookingUI.AppendBlock(finishedInfoText);
+        bookingUI.AppendBlock(srmServiceInfoList);
+
+        UIBlockDefinition remainingInfoText = new UIBlockDefinition
+        {
+            Type = UIBlockType.StaticText,
+            Text = "These is the remaining SRMServiceInfo",
+            Row = 16,
+        };
+        bookingUI.AppendBlock(remainingInfoText);
+        bookingUI.AppendBlock(remainingSRMServiceInfo);
+        UIBlockDefinition button = new UIBlockDefinition();
+        button.Type = UIBlockType.Button;
+        button.Text = "Delete...";
+        button.Row = 5;
+        button.Column = 2;
+        bookingUI.AppendBlock(button);
+
+
+        // outputs counts or each loop
+        engine.GenerateInformation("bookingInt " + reservationsInt);
+        engine.GenerateInformation("serviceInfoInt " + serviceInfoInt);
+        engine.GenerateInformation("remainingBookingInt" + remainingReservationsInt);
+        engine.GenerateInformation("remainingServiceInfoInt" + remainingServiceInfoInt);
+
+        UIResults results = engine.ShowUI(bookingUI);
+
+        // deletes the selected reservatiosn and SRMServiceInfo
+        DeleteReservations(engine, reservationsInt, results, reservationList, finishedReservations);
+        DeleteReservations(engine, remainingReservationsInt, results, remainingReservations, notFinishedReservations);
+        DeleteSRMInfo(engine, serviceInfoInt, results, srmServiceInfoList, finishedSRMServiceInfo);
+        DeleteSRMInfo(engine, remainingServiceInfoInt, results, remainingSRMServiceInfo, notFinishedSRMServiceInfo);
+    }
+    public void DeleteReservations(Engine engine, int value, UIResults results, UIBlockDefinition ui, List<Skyline.DataMiner.Net.ResourceManager.Objects.ReservationInstance> bookings)
+    {
+        int loop = 0;
+        int filter = 0;
+
+        // gets the count of each entry intot he checkboxes and checks against each if the checkbox was selected. If so, deletes
+        if (bookings != null)
+        {
+            while (value > loop)
+            {
+                bool delete = results.GetChecked(ui.DestVar, loop.ToString());
+                engine.GenerateInformation(bookings[filter].Name + " has been chosen to delete = " + results.GetChecked(ui.DestVar, loop.ToString()).ToString());
+                if (delete)
+                {
+                    engine.GenerateInformation("Deleting " + bookings[filter].Name);
+                   SrmManagers.ResourceManager.RemoveReservationInstances(bookings[filter]);
+                }
+                loop++;
+                filter++;
+            }
+        }
+    }
+    public void DeleteSRMInfo(Engine engine, int value, UIResults results, UIBlockDefinition ui, List<SRMServiceInfo> srmInfo)
+    {
+        int loop = 0;
+        int filter = 0;
+
+        // gets the count of each entry intot he checkboxes and checks against each if the checkbox was selected. If so, deletes
+        if (srmInfo != null)
+        {
+            while (value > loop)
+            {
+                bool delete = results.GetChecked(ui.DestVar, loop.ToString());
+                engine.GenerateInformation(srmInfo[filter].Name + " has been chosen to delete = " + results.GetChecked(ui.DestVar, loop.ToString()).ToString());
+                if (delete)
+                {
+                    engine.GenerateInformation("Deleting " + srmInfo[filter].Name);
+                    SrmManagers.ServiceManager.RemoveSRMServiceInfo(srmInfo[filter]);
+                }
+                loop++;
+                filter++;
+            }
+        }
+    }   
+}]]></Value>
+			<Param type="ref">C:\Skyline DataMiner\Files\SLSRMLibrary.dll</Param>
+			<Message></Message>
+		</Exe>
+	</Script>
+</DMSScript>
